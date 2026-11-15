@@ -1,0 +1,95 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Gamepad API Playground</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <header class="site-head">
+    <div>
+      <h1>Gamepad API Playground</h1>
+      <p class="muted">
+        A live look at what the browser's
+        <a href="https://developer.mozilla.org/en-US/docs/Web/API/Gamepad_API" target="_blank" rel="noopener">Gamepad API</a>
+        reports for every connected controller.
+      </p>
+    </div>
+    <ul class="chips" id="support"></ul>
+  </header>
+
+  <main>
+    <section id="empty" class="empty">
+      <div class="empty-icon" aria-hidden="true">🎮</div>
+      <h2>Connect a controller and press any button</h2>
+      <p class="muted">
+        Browsers hide gamepads until you press a button on one (so pages can't
+        fingerprint you). Plug in over USB or pair over Bluetooth, then press a button.
+      </p>
+    </section>
+
+    <div id="pads" class="pads"></div>
+
+    <section class="panel">
+      <div class="panel-head">
+        <h2>Playground</h2>
+        <label class="toggle"><input type="checkbox" id="wall-rumble" checked> Rumble on wall hits</label>
+      </div>
+      <p class="muted small">
+        Every controller gets a blob. <b>Left stick / D-pad</b> moves ·
+        <b>right stick</b> looks around · <b>A</b> sparkles · <b>B</b> changes color ·
+        <b>Y</b> boings · <b>right trigger</b> grows · <b>left trigger</b> shrinks.
+      </p>
+      <canvas id="playground" class="playground"></canvas>
+    </section>
+
+    <section class="panel">
+      <div class="panel-head">
+        <h2>Event log</h2>
+        <div class="row">
+          <label class="toggle"><input type="checkbox" id="log-buttons" checked> Log button presses</label>
+          <button type="button" class="btn ghost" id="clear-log">Clear</button>
+        </div>
+      </div>
+      <p class="muted small">
+        <code>gamepadconnected</code> / <code>gamepaddisconnected</code> are real browser events.
+        The API has no button events, so presses and releases here come from comparing
+        each frame's <code>navigator.getGamepads()</code> snapshot to the previous one.
+      </p>
+      <ol id="log" class="log"></ol>
+    </section>
+
+    <section class="panel">
+      <h2>How it works</h2>
+      <pre class="code"><code>window.addEventListener('gamepadconnected', (e) =&gt; {
+  console.log('connected', e.gamepad.index, e.gamepad.id);
+});
+
+function frame() {
+  for (const gp of navigator.getGamepads()) {
+    if (!gp) continue;
+    gp.buttons[0].pressed;   // boolean
+    gp.buttons[7].value;     // 0..1 (analog trigger)
+    gp.axes[0];              // -1..1 (left stick X)
+  }
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+
+// Rumble (Chrome, Edge, Safari)
+navigator.getGamepads()[0].vibrationActuator?.playEffect('dual-rumble', {
+  duration: 300, strongMagnitude: 1, weakMagnitude: 0.5,
+});</code></pre>
+    </section>
+  </main>
+
+  <script src="js/util.js"></script>
+  <script src="js/log.js"></script>
+  <script src="js/controller-svg.js"></script>
+  <script src="js/rumble.js"></script>
+  <script src="js/gamepad-card.js"></script>
+  <script src="js/playground.js"></script>
+  <script src="js/main.js"></script>
+</body>
+</html>
