@@ -9,6 +9,10 @@ Browse them all from [`index.html`](index.html), or on GitHub Pages at
 
 ## Toys
 
+- [`cave-flyer/`](cave-flyer/): Cave Flyer, a side-scrolling cave game. Steer
+  a spaceship through an endless procedurally generated cave with a gamepad or
+  the keyboard. Uses ES modules, so serve it over http
+  (`python3 -m http.server`) rather than opening the file directly.
 - [`gamepad-demo/`](gamepad-demo/): Gamepad API Playground, a live look at
   what the browser's Gamepad API reports for every connected controller.
 
