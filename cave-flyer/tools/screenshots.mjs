@@ -36,15 +36,29 @@ const server = createServer(async (req, res) => {
 await new Promise((r) => server.once('listening', r));
 const url = `http://127.0.0.1:${server.address().port}/cave-flyer/`;
 
+// Muted, with a debug port Chrome picks itself (so we can never attach to some
+// other Chrome), and killed however this script exits, even on a crash.
 const profile = await mkdtemp(join(tmpdir(), 'cave-flyer-chrome-'));
-const PORT = 9333;
-const chrome = spawn('google-chrome', ['--headless=new', `--remote-debugging-port=${PORT}`, `--user-data-dir=${profile}`,
-  '--window-size=1280,720', 'about:blank'], { stdio: 'ignore' });
+const chrome = spawn('google-chrome', ['--headless=new', '--remote-debugging-port=0', `--user-data-dir=${profile}`,
+  '--mute-audio', '--window-size=1280,720', 'about:blank'], { stdio: 'ignore' });
+process.on('exit', () => chrome.kill());
+for (const event of ['uncaughtException', 'unhandledRejection']) {
+  process.on(event, (err) => {
+    console.error(err);
+    process.exit(1);
+  });
+}
+process.on('SIGINT', () => process.exit(130));
+process.on('SIGTERM', () => process.exit(143));
 
 try {
+  let port;
+  for (let i = 0; i < 50 && !port; i++) {
+    try { port = (await readFile(join(profile, 'DevToolsActivePort'), 'utf8')).split('\n')[0]; } catch { await sleep(200); }
+  }
   let targets;
   for (let i = 0; i < 50 && !targets; i++) {
-    try { targets = await (await fetch(`http://127.0.0.1:${PORT}/json`)).json(); } catch { await sleep(200); }
+    try { targets = await (await fetch(`http://127.0.0.1:${port}/json`)).json(); } catch { await sleep(200); }
   }
   const ws = new WebSocket(targets.find((t) => t.type === 'page').webSocketDebuggerUrl);
   await new Promise((r) => ws.addEventListener('open', r));
@@ -103,7 +117,11 @@ try {
   console.log(errors.length ? 'console errors:\n' + errors.join('\n') : 'no console errors');
   ws.close();
 } finally {
-  chrome.kill();
+  if (chrome.exitCode === null) {
+    const exited = new Promise((r) => chrome.once('exit', r));
+    chrome.kill();
+    await exited;
+  }
   server.close();
   await rm(profile, { recursive: true, force: true }).catch(() => {});
 }
