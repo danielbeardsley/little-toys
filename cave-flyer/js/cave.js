@@ -6,15 +6,24 @@ import { lerp, clamp, rand, pick, circleHitsPolygon, distToSegment } from './geo
 import { SHIP_MAX_VY } from './ship.js';
 
 export const SEG = 24;          // world px between wall points
-const RAMP = 40000;             // world px of flying until full difficulty
-const INTRO_START = 500;        // the cave is wide open before this...
-const INTRO_LEN = 1500;         // ...and narrows to normal over this distance
-const FIRST_ROCK = 1300;
+const RAMP = 15000;             // world px until the walls reach full difficulty (~75 s)
+const SPEED_RAMP = 30000;       // scroll speed ramps up more gently than the walls
+const INTRO_START = 250;        // the cave is wide open before this...
+const INTRO_LEN = 700;          // ...then settles into the real cave
+const FIRST_ROCK = 1500;
 
 export const difficultyAt = (x) => clamp(x / RAMP, 0, 1);
-export const scrollSpeed = (d) => lerp(170, 320, d);
-// Smallest opening a rock is allowed to leave.
-const minPass = (d) => lerp(150, 105, d);
+export const speedAt = (x) => lerp(170, 290, clamp(x / SPEED_RAMP, 0, 1));
+
+// The walls carry the difficulty: the average opening narrows, and squeezes
+// (tight stretches) get more frequent and longer.
+const avgGap = (d) => lerp(330, 180, d);
+const minGap = (d) => lerp(130, 88, d);
+const squeezeChance = (d) => lerp(0.2, 0.55, d);
+const squeezeSegs = (d) => lerp(5, 28, d);
+const chamberChance = (d) => lerp(0.3, 0.15, d);
+// Rocks only go in roomy stretches and always leave at least this much space.
+const minPass = (d) => lerp(165, 130, d);
 
 export class Cave {
   constructor(height) {
@@ -26,6 +35,8 @@ export class Cave {
     this.center = height / 2;
     this.target = height / 2;
     this.segsToTarget = 20;
+    this.gap = avgGap(0);
+    this.section = { kind: 'normal', gap: avgGap(0), segs: 10 };
     this.gapPhase = rand(0, 10);
     this.nextRockX = FIRST_ROCK;
     this.lastRockX = -1e9;
@@ -45,35 +56,66 @@ export class Cave {
     this.gems = this.gems.filter((g) => g.x >= minX - 40);
   }
 
+  // The cave is a chain of sections, each with a target opening and a length.
+  nextSection(d) {
+    const r = Math.random();
+    const avg = avgGap(d);
+    if (r < squeezeChance(d)) {
+      this.section = {
+        kind: 'squeeze',
+        gap: Math.max(minGap(d), avg * rand(0.5, 0.72)),
+        segs: Math.round(squeezeSegs(d) * rand(0.7, 1.3)),
+      };
+    } else if (r < squeezeChance(d) + chamberChance(d)) {
+      this.section = { kind: 'chamber', gap: avg * rand(1.3, 1.7), segs: Math.round(rand(8, 20)) };
+    } else {
+      this.section = { kind: 'normal', gap: avg * rand(0.85, 1.15), segs: Math.round(rand(8, 22)) };
+    }
+  }
+
   addPoint() {
     const x = (this.x += SEG);
     const H = this.H;
     const d = difficultyAt(x);
     const intro = clamp((x - INTRO_START) / INTRO_LEN, 0, 1);
+    // Wall speed limits, as shares of how far the ship can climb per segment
+    // at the current scroll speed.
+    const perSeg = (SHIP_MAX_VY * SEG) / speedAt(x);
+    const centerMax = lerp(0.35, 0.5, d) * perSeg;
+    const wallMax = lerp(0.45, 0.65, d) * perSeg;
+    const sec = this.section;
 
-    this.gapPhase += 0.045;
-    const wobble = 1 + 0.1 * Math.sin(this.gapPhase) + 0.06 * Math.sin(this.gapPhase * 2.3 + 1);
-    const gap = lerp(H - 60, lerp(390, 240, d) * wobble, intro);
-
-    // Drift the cave's center line toward a target that changes every so often,
-    // never sloping faster than the ship can climb at the current speed.
+    // Drift the center line toward a target that changes every so often (more
+    // often, so twistier, as it gets harder).
     if (--this.segsToTarget <= 0) {
-      const half = gap / 2 + 24;
+      const half = Math.min(sec.gap, this.gap) / 2 + 20;
       this.target = rand(half, H - half);
-      this.segsToTarget = Math.round(rand(12, 34));
+      this.segsToTarget = Math.round(rand(lerp(14, 7, d), lerp(34, 20, d)));
     }
-    const maxStep = (0.45 * SHIP_MAX_VY * SEG) / scrollSpeed(d);
-    this.center += clamp((this.target - this.center) * 0.1, -maxStep, maxStep);
+    const step = clamp((this.target - this.center) * 0.1, -centerMax, centerMax);
+    this.center += step;
+
+    // Ease the opening toward the current section's size, but never so fast
+    // that a wall (drift plus half the opening change) outruns the ship. A
+    // section's length only counts down once the opening has arrived, so
+    // squeezes last as long as they say.
+    const gapMax = 2 * Math.max(0, wallMax - Math.abs(step));
+    this.gap += clamp((sec.gap - this.gap) * 0.2, -gapMax, gapMax);
+    if (Math.abs(this.gap - sec.gap) < 12 && --sec.segs <= 0) this.nextSection(d);
+    this.gapPhase += 0.06;
+    const gap = Math.min(H - 40, lerp(H - 60, this.gap * (1 + 0.04 * Math.sin(this.gapPhase)), intro));
     this.center = clamp(this.center, gap / 2 + 18, H - gap / 2 - 18);
 
-    const top = this.center - gap / 2 + rand(-4, 4);
-    const bot = this.center + gap / 2 + rand(-4, 4);
+    const top = this.center - gap / 2 + rand(-3, 3);
+    const bot = this.center + gap / 2 + rand(-3, 3);
     this.points.push({ x, top, bot });
 
-    if (x >= this.nextRockX) {
+    const settled = sec.kind !== 'squeeze' && sec.segs >= 4 && Math.abs(this.gap - sec.gap) < 12;
+    if (x >= this.nextRockX && settled) {
       this.spawnRock(x, top, bot, d);
     } else if (x >= this.nextGemX && x - this.lastRockX > 140 && this.nextRockX - x > 140) {
-      this.gems.push({ x, y: rand(top + 40, bot - 40), phase: rand(0, Math.PI * 2) });
+      const m = Math.min(40, (bot - top) / 2 - 6);
+      this.gems.push({ x, y: rand(top + m, bot - m), phase: rand(0, Math.PI * 2) });
       this.nextGemX = x + rand(200, 420);
     }
   }
@@ -82,14 +124,14 @@ export class Cave {
     const rock = this.designRock(x, top, bot, d);
     // Only place it if a ship coming through the previous rock's opening can
     // reach this one's in time; otherwise try again a little further on.
-    if (!rock || !this.reachable(x, rock.bands, d)) {
+    if (!rock || !this.reachable(x, rock.bands)) {
       this.nextRockX = x + SEG * 2;
       return;
     }
     for (const [kind, poly] of rock.parts) this.addObstacle(kind, poly);
     this.lastRockX = x;
     this.lastBands = rock.bands;
-    this.nextRockX = x + lerp(640, 300, d) * rand(0.8, 1.25) + (rock.parts.length > 1 ? 120 : 0);
+    this.nextRockX = x + lerp(1000, 650, d) * rand(0.8, 1.3) + (rock.parts.length > 1 ? 120 : 0);
   }
 
   // Picks a rock shape. Returns its polygons plus the open "bands" [lo, hi]
@@ -98,7 +140,7 @@ export class Cave {
     const pass = minPass(d);
     const room = bot - top;
     const kinds = ['stalactite', 'stalagmite'];
-    if (d > 0.12 && room - pass * 1.05 > 70) kinds.push('gate');
+    if (d > 0.3 && room - pass * 1.05 > 70) kinds.push('gate');
     if (room > pass * 2 + 70) kinds.push('boulder', 'boulder');
     const kind = pick(kinds);
 
@@ -123,27 +165,32 @@ export class Cave {
         bands: [[top + a, bot - (total - a)]],
       };
     }
-    const lenMax = Math.min(room - pass, room * 0.68);
-    if (lenMax < 40) return null;
+    const lenMax = Math.min(room - pass, room * 0.6);
+    if (lenMax < 60) return null;
     const len = lenMax * rand(0.55, 1);
     return kind === 'stalactite'
       ? { parts: [[kind, spike(x, top, len, -1)]], bands: [[top + len, bot]] }
       : { parts: [[kind, spike(x, bot, len, 1)]], bands: [[top, bot - len]] };
   }
 
-  reachable(x, bands, d) {
-    if (!this.lastBands) return true;
-    // Room to maneuver: the gap between rocks minus their widths and the ship's length.
-    const run = Math.max(0, x - this.lastRockX - 150);
-    const canClimb = (0.6 * SHIP_MAX_VY * run) / scrollSpeed(d);
+  // Could a ship get from everywhere it might have been forced to be (the
+  // last rock's openings, and the recent wall openings) into one of `bands`?
+  reachable(x, bands) {
+    const climbPerPx = (0.6 * SHIP_MAX_VY) / speedAt(x);
     const margin = 14;
-    let need = Infinity;
-    for (const [lo1, hi1] of this.lastBands) {
-      for (const [lo2, hi2] of bands) {
-        need = Math.min(need, Math.max(0, lo2 + margin - (hi1 - margin), lo1 + margin - (hi2 - margin)));
-      }
+    const need = (lo1, hi1) => Math.min(...bands.map(([lo2, hi2]) =>
+      Math.max(0, lo2 + margin - (hi1 - margin), lo1 + margin - (hi2 - margin))));
+
+    // Room to maneuver is the horizontal run minus rock widths and the ship's length.
+    if (this.lastBands) {
+      const run = Math.max(0, x - this.lastRockX - 170);
+      if (Math.min(...this.lastBands.map(([lo, hi]) => need(lo, hi))) > climbPerPx * run) return false;
     }
-    return need <= canClimb;
+    for (const p of this.points) {
+      if (p.x < x - 600 || p.x >= x) continue;
+      if (need(p.top, p.bot) > climbPerPx * Math.max(0, x - p.x - 110)) return false;
+    }
+    return true;
   }
 
   addObstacle(kind, poly) {

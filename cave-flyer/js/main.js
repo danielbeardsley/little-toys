@@ -1,6 +1,6 @@
 // Cave Flyer: game states, the frame loop, and drawing.
 
-import { Cave, SEG, difficultyAt, scrollSpeed } from './cave.js';
+import { Cave, SEG, speedAt } from './cave.js';
 import { Ship, drawShip } from './ship.js';
 import { Input } from './input.js';
 import { Sound } from './audio.js';
@@ -88,7 +88,7 @@ function spawnShip(invuln) {
 }
 
 function scrollWorld(dt) {
-  g.camX += scrollSpeed(difficultyAt(g.camX)) * dt;
+  g.camX += speedAt(g.camX) * dt;
   g.cave.ensure(g.camX + W + SEG * 4);
   g.cave.prune(g.camX - 200);
 }
@@ -131,7 +131,7 @@ function updateShip(dt) {
   s.update(dt, input, W, H);
 
   // Exhaust: particles left in world space, so they stream out behind as the cave scrolls.
-  const speed = scrollSpeed(difficultyAt(g.camX));
+  const speed = speedAt(g.camX);
   if (Math.random() < 0.9) {
     particles.add(g.camX + s.x - 22, s.y + rand(-3, 3), speed * 0.25 + rand(-30, 30), rand(-20, 20),
       rand(0.2, 0.45), rand(2, 4), Math.random() < 0.5 ? '#ffb13b' : '#ff6a3d', 1);
