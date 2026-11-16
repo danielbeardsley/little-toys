@@ -4,6 +4,7 @@
 
 import { lerp, clamp, rand, pick, circleHitsPolygon, distToSegment } from './geom.js';
 import { SHIP_MAX_VY } from './ship.js';
+import { layeredNoise } from './noise.js';
 
 export const SEG = 24;          // world px between wall points
 const RAMP = 15000;             // world px until the walls reach full difficulty (~75 s)
@@ -17,13 +18,26 @@ export const speedAt = (x) => lerp(170, 290, clamp(x / SPEED_RAMP, 0, 1));
 
 // The walls carry the difficulty: the average opening narrows, and squeezes
 // (tight stretches) get more frequent and longer.
-const avgGap = (d) => lerp(330, 180, d);
+const avgGap = (d) => lerp(305, 155, d);
 const minGap = (d) => lerp(130, 88, d);
 const squeezeChance = (d) => lerp(0.2, 0.55, d);
 const squeezeSegs = (d) => lerp(5, 28, d);
 const chamberChance = (d) => lerp(0.3, 0.15, d);
 // Rocks only go in roomy stretches and always leave at least this much space.
 const minPass = (d) => lerp(165, 130, d);
+
+// Splits a section's average opening into a guaranteed corridor plus how far
+// each wall may wander outward from it. Wander averages about half its range
+// per wall, so corridor + wander comes out near the section's gap on average.
+function withCorridor(sec, d) {
+  const squeeze = sec.kind === 'squeeze';
+  sec.corridor = Math.max(minGap(d), sec.gap * (squeeze ? 0.68 : 0.5));
+  sec.wander = sec.gap * (squeeze ? 0.45 : 0.56);
+  return sec;
+}
+
+// Each wall's shape: long swells, medium bumps and small lumps (wavelengths in px).
+const wallNoise = () => layeredNoise([[650, 1], [230, 0.55], [80, 0.22]]);
 
 export class Cave {
   constructor(height) {
@@ -33,10 +47,12 @@ export class Cave {
     this.gems = [];      // { x, y, phase }
     this.x = -SEG * 2;
     this.center = height / 2;
-    this.target = height / 2;
-    this.segsToTarget = 20;
-    this.gap = avgGap(0);
-    this.section = { kind: 'normal', gap: avgGap(0), segs: 10 };
+    this.centerNoise = layeredNoise([[1200, 1], [450, 0.45]]);
+    this.centerPhase = 0;
+    this.gap = avgGap(0);           // current corridor width
+    this.section = withCorridor({ kind: 'normal', gap: avgGap(0), segs: 10 }, 0);
+    this.ceiling = { y: null, phase: 0, noise: wallNoise() };
+    this.floor = { y: null, phase: 0, noise: wallNoise() };
     this.gapPhase = rand(0, 10);
     this.nextRockX = FIRST_ROCK;
     this.lastRockX = -1e9;
@@ -60,17 +76,34 @@ export class Cave {
   nextSection(d) {
     const r = Math.random();
     const avg = avgGap(d);
+    let sec;
     if (r < squeezeChance(d)) {
-      this.section = {
+      sec = {
         kind: 'squeeze',
         gap: Math.max(minGap(d), avg * rand(0.5, 0.72)),
         segs: Math.round(squeezeSegs(d) * rand(0.7, 1.3)),
       };
     } else if (r < squeezeChance(d) + chamberChance(d)) {
-      this.section = { kind: 'chamber', gap: avg * rand(1.3, 1.7), segs: Math.round(rand(8, 20)) };
+      sec = { kind: 'chamber', gap: avg * rand(1.3, 1.7), segs: Math.round(rand(8, 20)) };
     } else {
-      this.section = { kind: 'normal', gap: avg * rand(0.85, 1.15), segs: Math.round(rand(8, 22)) };
+      sec = { kind: 'normal', gap: avg * rand(0.85, 1.15), segs: Math.round(rand(8, 22)) };
     }
+    this.section = withCorridor(sec, d);
+  }
+
+  // Moves one wall: it bulges outward from the corridor edge following its own
+  // noise, never into the corridor, never faster than `wallMax` per segment.
+  // dir is -1 for the ceiling (pushes up) and +1 for the floor (pushes down).
+  // `rate` > 1 squeezes the noise so the bumps come closer together.
+  moveWall(w, edge, dir, amp, wallMax, rate) {
+    if (w.y === null) w.y = edge;
+    w.phase += SEG * rate;
+    const room = Math.max(0, dir < 0 ? edge - 14 : this.H - 14 - edge);
+    const off = Math.min(room, amp * w.noise(w.phase));
+    let y = w.y + clamp(edge + dir * off - w.y, -wallMax, wallMax);
+    y = dir < 0 ? Math.min(y, edge) : Math.max(y, edge);
+    w.y = y;
+    return y;
   }
 
   addPoint() {
@@ -78,39 +111,42 @@ export class Cave {
     const H = this.H;
     const d = difficultyAt(x);
     const intro = clamp((x - INTRO_START) / INTRO_LEN, 0, 1);
-    // Wall speed limits, as shares of how far the ship can climb per segment
-    // at the current scroll speed.
+    // Speed limits, as shares of how far the ship can climb per segment at
+    // the current scroll speed. The corridor's edges stay under corridorMax;
+    // the visible walls (corridor edge plus wander) stay under wallMax.
     const perSeg = (SHIP_MAX_VY * SEG) / speedAt(x);
-    const centerMax = lerp(0.35, 0.5, d) * perSeg;
+    const centerMax = lerp(0.25, 0.4, d) * perSeg;
+    const corridorMax = lerp(0.4, 0.55, d) * perSeg;
     const wallMax = lerp(0.45, 0.65, d) * perSeg;
     const sec = this.section;
 
-    // Drift the center line toward a target that changes every so often (more
-    // often, so twistier, as it gets harder).
-    if (--this.segsToTarget <= 0) {
-      const half = Math.min(sec.gap, this.gap) / 2 + 20;
-      this.target = rand(half, H - half);
-      this.segsToTarget = Math.round(rand(lerp(14, 7, d), lerp(34, 20, d)));
-    }
-    const step = clamp((this.target - this.center) * 0.1, -centerMax, centerMax);
+    // The corridor is a hidden path that is always flyable. Its center line
+    // meanders along smooth noise, bending more often as it gets harder.
+    this.centerPhase += SEG * lerp(1, 2.2, d);
+    const half = Math.min(sec.corridor, this.gap) / 2 + 20;
+    const target = lerp(half, H - half, this.centerNoise(this.centerPhase));
+    const step = clamp((target - this.center) * 0.15, -centerMax, centerMax);
     this.center += step;
 
-    // Ease the opening toward the current section's size, but never so fast
-    // that a wall (drift plus half the opening change) outruns the ship. A
-    // section's length only counts down once the opening has arrived, so
-    // squeezes last as long as they say.
-    const gapMax = 2 * Math.max(0, wallMax - Math.abs(step));
-    this.gap += clamp((sec.gap - this.gap) * 0.2, -gapMax, gapMax);
-    if (Math.abs(this.gap - sec.gap) < 12 && --sec.segs <= 0) this.nextSection(d);
+    // Ease the corridor's width toward the section's, never so fast that an
+    // edge (drift plus half the width change) outruns the ship. A section's
+    // length only counts down once the width has arrived, so squeezes last as
+    // long as they say.
+    const widthMax = 2 * Math.max(0, corridorMax - Math.abs(step));
+    this.gap += clamp((sec.corridor - this.gap) * 0.2, -widthMax, widthMax);
+    if (Math.abs(this.gap - sec.corridor) < 12 && --sec.segs <= 0) this.nextSection(d);
     this.gapPhase += 0.06;
-    const gap = Math.min(H - 40, lerp(H - 60, this.gap * (1 + 0.04 * Math.sin(this.gapPhase)), intro));
-    this.center = clamp(this.center, gap / 2 + 18, H - gap / 2 - 18);
+    const corridor = Math.min(H - 40, lerp(H - 60, this.gap * (1 + 0.04 * Math.sin(this.gapPhase)), intro));
+    this.center = clamp(this.center, corridor / 2 + 18, H - corridor / 2 - 18);
 
-    const top = this.center - gap / 2 + rand(-3, 3);
-    const bot = this.center + gap / 2 + rand(-3, 3);
+    // The walls bulge outward from the corridor independently of each other.
+    const amp = sec.wander * intro;
+    const rate = lerp(1, 1.6, d);
+    const top = this.moveWall(this.ceiling, this.center - corridor / 2, -1, amp, wallMax, rate) + rand(-3, 0);
+    const bot = this.moveWall(this.floor, this.center + corridor / 2, 1, amp, wallMax, rate) + rand(0, 3);
     this.points.push({ x, top, bot });
 
-    const settled = sec.kind !== 'squeeze' && sec.segs >= 4 && Math.abs(this.gap - sec.gap) < 12;
+    const settled = sec.kind !== 'squeeze' && sec.segs >= 4 && Math.abs(this.gap - sec.corridor) < 12;
     if (x >= this.nextRockX && settled) {
       this.spawnRock(x, top, bot, d);
     } else if (x >= this.nextGemX && x - this.lastRockX > 140 && this.nextRockX - x > 140) {

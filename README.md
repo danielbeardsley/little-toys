@@ -13,6 +13,8 @@ Browse them all from [`index.html`](index.html), or on GitHub Pages at
   a spaceship through an endless procedurally generated cave with a gamepad or
   the keyboard. Uses ES modules, so serve it over http
   (`python3 -m http.server`) rather than opening the file directly.
+  `cave-flyer/tools/` has a Node script that checks generated caves are
+  always flyable, and one that takes headless-Chrome screenshots.
 - [`gamepad-demo/`](gamepad-demo/): Gamepad API Playground, a live look at
   what the browser's Gamepad API reports for every connected controller.
 
