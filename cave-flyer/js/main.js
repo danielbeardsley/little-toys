@@ -46,6 +46,7 @@ const g = {
   cave: null,
   ship: new Ship(),
   camX: 0,
+  distance: 0,     // world px flown by a live ship (the cave keeps scrolling after a crash)
   lives: 0,
   gems: 0,
   timer: 0,
@@ -56,12 +57,13 @@ const g = {
   newBest: false,
 };
 
-const meters = () => Math.floor(g.camX / 20);
+const meters = () => Math.floor(g.distance / 20);
 const score = () => meters() + g.gems * GEM_POINTS;
 
 function newWorld() {
   g.cave = new Cave(H);
   g.camX = 0;
+  g.distance = 0;
   g.cave.ensure(W + SEG * 4);
   particles.clear();
   g.lives = START_LIVES;
@@ -193,10 +195,13 @@ function update(dt) {
       scrollWorld(dt * 0.7);
       if (p.confirm) startGame();
       break;
-    case 'playing':
+    case 'playing': {
+      const before = g.camX;
       scrollWorld(dt);
+      g.distance += g.camX - before;
       updateShip(dt);
       break;
+    }
     case 'dying':
       scrollWorld(dt);
       if ((g.timer -= dt) <= 0) afterCrash();
